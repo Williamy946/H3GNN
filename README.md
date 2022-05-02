@@ -5,3 +5,7 @@ Personalized Session-based recommendation (PSBR) is a general and challenging ta
 # Run
 
 run `python main.py`
+
+# FYI
+
+Source code for "H3GNN: Hybrid Hierarchical HyperGraph Neural Network for Personalized Session-based Recommender", ready to submit.
