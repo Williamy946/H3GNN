@@ -4,7 +4,6 @@ import scipy as sp
 from operator import itemgetter
 from collections import Counter
 from tqdm import tqdm
-import torch
 
 def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, train_edge_num):
     indptr, indices, data = [], [], []
@@ -20,6 +19,7 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
     tmp_len = 0
     max_node = 0
     shift = 0
+    u_sum = np.array([1]*n_node)
     if train_hist == None:
         istrain = True
         train_hist = {}
@@ -29,6 +29,7 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
         tmp_hist = train_hist[user[0]]
         tmp_len = len(tmp_hist)
     for j in range(len(all_sessions)):
+        #print(j)
         # construct history session
         if cur_user == user[j]:
             if len(tmp_hist) > max_hist_len:
@@ -41,7 +42,6 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
             tmp_len += 1
         else:
             if istrain:
-                #train_hist[cur_user] = tmp_hist
                 if len(tmp_hist) > max_hist_len:
                     train_hist[cur_user] = tmp_hist[-max_hist_len:].copy()  # hist_sess[j][:max_hist_len]
                 else:
@@ -49,8 +49,6 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
                 tmp_hist = [j+shift]
                 tmp_len = 1
                 hist_len[j] = 0
-                #hist_sess[j] = tmp_hist
-                #tmp_hist.append(j + shift)
             else:
                 tmp_hist = train_hist[user[j]]
                 tmp_len = len(tmp_hist)
@@ -61,14 +59,11 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
             cur_user = user[j]
             #hist_sess[j][:hist_len[j]] = tmp_hist.copy()
         if j == len(all_sessions)-1:
+
             if len(tmp_hist) > max_hist_len:
-                #hist_sess[j] = tmp_hist[-max_hist_len:].copy()#hist_sess[j][:max_hist_len]
-                #hist_len[j] = max_hist_len
                 train_hist[cur_user] = tmp_hist[-max_hist_len:].copy()
             else:
-                #hist_sess[j][:hist_len[j]] = tmp_hist.copy()
                 train_hist[cur_user] = tmp_hist.copy()
-
 
         # construct global graph
         seq = all_sessions[j]
@@ -78,8 +73,7 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
             u = seq[i]-1
             v = seq[i+1]-1
             global_A[u][v] = 1
-            #global_A[v][u] += 1
-
+            u_sum[u] += 1
         # construct hyper graph incidene matrix
         session = np.unique(all_sessions[j]) # 将session转换为集合，损失节点的重复性信息以及访问序关系
         length = len(session)
@@ -92,15 +86,26 @@ def data_masks(all_sessions, user, n_node, n_user, max_hist_len, train_hist, tra
         for i in range(length):
             indices.append(session[i]-1)
             data.append(1)
-    u_sum = np.sum(global_A, 0)
-    u_sum[np.where(u_sum == 0)] = 1
-    global_A = csr_matrix(np.divide(global_A, u_sum[:, None]))
+    print("Out")
+
+    g_indices, g_indptr = global_A.nonzero()
+    print("non zero assign")
+    global_A = csr_matrix(global_A)
+    print("sparse")
+    val = np.repeat(1.0/u_sum, global_A.getnnz(axis=1))
+    print("val generating")
+    global_A = csr_matrix((val, (g_indices, g_indptr)), shape=global_A.shape)
 
     # indices for positions of items of each session in n_nodes
     # indptr for position slices of each sessions in each row
+    print("sparsing...")
+    print(len(all_sessions))
+    indices = np.array(indices).astype('int64')
+    indptr = np.array(indptr).astype('int64')
+    u_indices = np.array(u_indices).astype('int64')
+    u_indptr = np.array(u_indptr).astype('int64')
     matrix = csr_matrix((data, indices, indptr), shape=(len(all_sessions), n_node))
     u_matrix = csr_matrix((u_data, u_indices, u_indptr), shape=(len(all_sessions), n_user))
-
     return matrix, u_matrix, global_A, hist_sess, hist_len, train_hist
 
 def split_validation(train_set, valid_portion):
@@ -116,8 +121,23 @@ def split_validation(train_set, valid_portion):
 
     return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
+def common_seq(data_list):
+    out_seqs = []
+    label = []
+    uid = []
+    for i in range(len(data_list[0])):
+        u = data_list[2][i]
+        seq = data_list[0][i]+[data_list[1][i]]
+        for j in range(1, len(seq)):
+            uid.append(int(u))
+            out_seqs.append(seq[:-j])
+            label.append(seq[-j])
+    final_seqs = [out_seqs, label, uid]
+    return final_seqs
+
 class Data():
-    def __init__(self, data, opt, shuffle=False, n_node=None, n_user=None, train_hist = None, train_edge=None, max_hist_len= 100):
+    def __init__(self, data, opt, shuffle=False, n_node=None, n_user=None, train_hist = None, train_edge=None, max_hist_len = 100):
+        data = common_seq(data)
         self.raw = np.asarray(data[0])
         self.user = np.asarray(data[2])
         self.max_hist_len = max_hist_len
@@ -127,74 +147,58 @@ class Data():
         else:
             self.train_edge_num = 0
         self.train_hist = train_hist
+        print("Masking...")
         H_T, u_H_T, global_A, hist_sess, hist_len, self.train_hist = data_masks(self.raw, self.user, n_node, n_user, self.max_hist_len, self.train_hist, self.train_edge_num) # 获取N*E item-hyperedge关联矩阵； M*E user-hyperedge关联矩阵
+        self.H_T = H_T
+        self.u_H_T = u_H_T
+        self.global_A = global_A
+        print("Done")
         BH_T = H_T.T.multiply(1.0/H_T.sum(axis=1).reshape(1, -1)) # 对每个hyperedge中item进行加权，此处每个item权重相同，为1/hyperedge_degree，此矩阵乘item embedding可得到hyperedge embedding
+        #print(1)
         BH_T = BH_T.T
         H = H_T.T
+        #print(2)
         DH = H.T.multiply(1.0/H.sum(axis=1).reshape(1, -1))
         DH = DH.T
+        #print(3)
         DHBH_T = np.dot(DH,BH_T)
-
+        #liH = np.dot(BH_T,DH)
+        #print(liH.shape)
         u_H = u_H_T.T
+        #print(4)
         u_UH_T = u_H_T.multiply(1.0/u_H.sum(axis=1).reshape(1, -1)) # 对用户对每条超边加权，此处每个hyperedge权重相同，为1/user_degree， 此矩阵乘hyperedge embedding可得到user embedding
         u_UH = u_UH_T.T
-        u_item_matrix = np.dot(u_UH, BH_T)
-        # 反向传播
-        item_u_matrix = np.dot(DH,u_H_T)
+        #print(u_H.tocoo().shape, u_H.tocoo().nnz)
+        #print(BH_T.tocoo().shape, BH_T.tocoo().nnz)
+        #print(u_H@BH_T.tocoo().nnz)
+        u_item_matrix = u_UH@BH_T#np.dot(np.dot(u_UH, liH), BH_T)#np.dot(u_UH, BH_T)
+        #adj_pre = DH@BH_T # Avoiding E*E matrix
+        #adj_pos = DH@u_H_T@u_item_matrix#np.dot(np.dot(DH, u_UH_T),np.dot(u_UH, BH_T))
+        #adj = adj_pre@adj_pos
+        #print(5)
+        #print(DHBH_T.tocoo().shape, DHBH_T.tocoo().nnz)
+        #print(adj.tocoo().shape, adj.tocoo().nnz)
+        #np.dot(DH, liH, u_UH_T, u_UH, BH_T)
 
         self.edge_item = BH_T.tocsr()
 
         if train_edge != None:
             self.edge_item = sp.sparse.vstack((train_edge, self.edge_item))
         if self.opt.ishist:
-            hist_item_list = []
-            for i in tqdm(range(len(hist_sess))):
-                hist_item = self.edge_item[hist_sess[i], :].tocoo()
-                u_values = hist_item.data
-                u_indices = np.vstack((hist_item.row, hist_item.col))
-                i = torch.LongTensor(u_indices)
-                v = torch.FloatTensor(u_values)
-                shape = hist_item.shape
-                hist_item = torch.sparse.FloatTensor(i, v, torch.Size(shape))
-                hist_item_list.append(hist_item)
-            self.hist_sess_item = np.array(hist_item_list)
-
-        self.adjacency = DHBH_T.tocoo()
-        values = self.adjacency.data
-        indices = np.vstack((self.adjacency.row, self.adjacency.col))
-        i = torch.LongTensor(indices)
-        v = torch.FloatTensor(values)
-        shape = self.adjacency.shape
-        self.adjacency = torch.sparse.FloatTensor(i, v, torch.Size(shape))
-
+            self.hist_sess_item = np.array([self.edge_item[hist_sess[i], :].tocoo() for i in tqdm(range(len(hist_sess)))])
+        self.adjacency = DHBH_T.tocoo()#adj.tocoo()#
+        self.adjacency_2 = DHBH_T.tocoo()##adj.tocoo()##
+        self.hg_agg = BH_T.tocoo()
+        self.hg_item_diffusion = DH.tocoo()
         self.u_adj = u_item_matrix.tocoo()
-        self.item_u_adj = item_u_matrix.tocoo()
-        u_values = self.u_adj.data
-        u_indices = np.vstack((self.u_adj.row, self.u_adj.col))
-        i = torch.LongTensor(u_indices)
-        v = torch.FloatTensor(u_values)
-        shape = self.u_adj.shape
-        self.u_adj = torch.sparse.FloatTensor(i, v, torch.Size(shape))
-
-        u_values = self.item_u_adj.data
-        u_indices = np.vstack((self.item_u_adj.row, self.item_u_adj.col))
-        i = torch.LongTensor(u_indices)
-        v = torch.FloatTensor(u_values)
-        shape = self.item_u_adj.shape
-        self.item_u_adj = torch.sparse.FloatTensor(i, v, torch.Size(shape))
-
         self.global_A = global_A.tocoo()
-        #self.u_e_mat =
-        #self.phase1_mat = BH_T.tocoo()
-        #self.phase2_mat = DH.tocoo()
-
 
         self.n_node = n_node
         self.n_user = n_user
         self.targets = np.asarray(data[1])
-        self.user = np.asarray(data[2])
         self.hist_sess = hist_sess
         self.hist_len = hist_len
+        print("Statistics: node: %d; user: %d"%(self.n_node, self.n_user))
 
         self.length = len(self.raw)
         self.shuffle = shuffle
@@ -225,8 +229,6 @@ class Data():
             self.user = self.user[shuffled_arg]
             self.hist_sess = self.hist_sess[shuffled_arg]
             self.hist_len = self.hist_len[shuffled_arg]
-            if self.opt.ishist:
-                self.hist_sess_item = self.hist_sess_item[shuffled_arg]
         n_batch = int(self.length / batch_size)
         if self.length % batch_size != 0:
             n_batch += 1
@@ -240,14 +242,11 @@ class Data():
         inp = self.raw[index]
         batch_hist = self.hist_sess[index]
         batch_hist_len = self.hist_len[index]
-        if self.opt.ishist:
-            batch_hist_item = self.hist_sess_item[index]
-        else:
-            batch_hist_item = []
-        inputs = []
+
+        batch_hist_item = []
         for session in inp:
             num_node.append(len(np.nonzero(session)[0]))
-        max_n_node = np.max(num_node) + 1 # +1 for extra 0
+        max_n_node = np.max(num_node) + 1
         session_len = []
         reversed_sess_item = []
         mask = []
@@ -258,33 +257,11 @@ class Data():
             items.append(node.tolist() + (max_n_node - len(node)) * [0])
             mask.append([1]*len(nonzero_elems) + (max_n_node - len(nonzero_elems)) * [0])
             reversed_sess_item.append(list(reversed([np.where(node == i)[0][0]  for i in session])) + (max_n_node - len(session)) * [0])
-            u_A = np.diag(np.ones(max_n_node))#np.zeros((max_n_node, max_n_node))
-            # Attentive
-            '''
-            for i in np.arange(len(u_input) - 1):
-                u = np.where(node == u_input[i])[0][0]
-                u_A[u][u] = 1
-                if u_input[i + 1] == 0:
-                    break
-                v = np.where(node == u_input[i + 1])[0][0]
-                if u == v or u_A[u][v] == 4:
-                    continue
-                u_A[v][v] = 1
-                if u_A[v][u] == 2:
-                    u_A[u][v] = 4
-                    u_A[v][u] = 4
-                else:
-                    u_A[u][v] = 2
-                    u_A[v][u] = 3
-            '''
-            # SR-GNN
+            u_A = np.diag(np.ones(max_n_node))
             for i in np.arange(len(session) - 1):
-                #if session[i + 1] == 0:
-                #    break
                 u = np.where(node == session[i])[0][0]
                 v = np.where(node == session[i + 1])[0][0]
                 u_A[u][v] = 1
-                #u_A[v][u] = 1
             u_sum_in = np.sum(u_A, 0)
             u_sum_in[np.where(u_sum_in == 0)] = 1
             u_A_in = np.divide(u_A, u_sum_in)
