@@ -6,6 +6,13 @@ Personalized Session-based recommendation (PSBR) is a general and challenging ta
 
 ![H3GNN](readme_graph/H3GNN.png)
 
+## Configuration
+
+Environment
+```
+Python3, Pytorch 1.6.0, Numpy 1.18.1
+```
+
 # Run
 
 run `python main.py`
